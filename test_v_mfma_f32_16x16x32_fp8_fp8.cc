@@ -28,7 +28,7 @@ using fp8_t = __hip_fp8_e4m3_fnuz;
 #define BLOCK_SIZE_N (FRAG_N * 1)
 #define BLOCK_SIZE_K (FRAG_K * 1)
 
-#define USE_ASM false // directly use of the instruction introduces precision problem ...
+#define USE_ASM true
 #define ALU_ASYN false
 
 // DEMO 0 : rocwmma
@@ -36,7 +36,11 @@ using fp8_t = __hip_fp8_e4m3_fnuz;
 // DEMO 2 : v_mfma_f32_16x16x32_fp8_fp8, demonstrate multi blocks single warp mfma
 #define DEMO 1
 
-__device__ __inline__ void __sync_warp(void) { __asm__ volatile("s_barrier" ::); }
+__device__ __inline__ void async_load_fence(uint32_t cnt) {
+    asm volatile("s_waitcnt vmcnt(%0)" : : "n" (cnt) : "memory");
+}
+
+__device__ __inline__ void __sync_warp(void) { __asm__ volatile("s_barrier" : : : "memory"); }
 
 __global__ void v_mfma_intrinsics_test(const fp8_t* __restrict__ lhs, const fp8_t* __restrict__ rhs, float* output,
                                        unsigned int m, unsigned int n, unsigned int k,
@@ -129,7 +133,7 @@ __global__ void v_mfma_intrinsics_test(const fp8_t* __restrict__ lhs, const fp8_
         long *a = reinterpret_cast<long *>(a_frag);
         long *b = reinterpret_cast<long *>(b_frag);
 
-        __sync_warp(); // __syncthreads();
+        __sync_warp();
 
 #if !USE_ASM
         *d = __builtin_amdgcn_mfma_f32_16x16x32_fp8_fp8(
@@ -144,7 +148,9 @@ __global__ void v_mfma_intrinsics_test(const fp8_t* __restrict__ lhs, const fp8_
                         "%1, "
                         "%2, %3"
                         : "+v"(*d)
-                        :  "v"(*a), "v"(*b), "v"(*d) : );
+                        :  "v"(*a), "v"(*b), "v"(*d));
+        
+        __sync_warp();
 #endif // USE_ASM
     }
 
@@ -356,11 +362,6 @@ int main(int argc, char * argv[]) {
 
     float* output_d = nullptr;
     hip_check(hipMalloc(&output_d, sizeof(float) * num_ele));
-
-    // 1 x warp (block) test
-    // v_mfma_intrinsics_test<<<1, 64>>>(output_d, M/*lda*/, N/*ldb*/); // pass with correct answer
-
-    // v_mfma_asm_test<<<1, 64>>>(lhs_d, rhs_d, output_d, M, N, K, K/*stride_a_m*/, K/*stride_b_n*/, N/*stride_c_m*/); // pass with correct answer
 
 #define CEILDIV(x, y) (((x) + (y)-1) / (y))
 
